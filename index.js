@@ -1,6 +1,6 @@
 import express from 'express'
 import cors from 'cors'
-import { MongoClient } from 'mongodb'
+import { MongoClient, ObjectId } from 'mongodb'
 import dotenv from 'dotenv'
 dotenv.config()
 const app = express()
@@ -56,6 +56,19 @@ app.get('/studios', async (req, res) => {
         }
         const result = await cursor.toArray();
         res.send({ success: true, data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+// Get Single Studio Details
+app.get('/studios/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
+        if (!studio) {
+            return res.status(404).send({ success: false, message: 'Studio not found.' });
+        }
+        res.send({ success: true, data: studio });
     } catch (err) {
         res.status(500).send({ success: false, message: err.message });
     }
