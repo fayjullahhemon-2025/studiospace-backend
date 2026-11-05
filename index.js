@@ -184,20 +184,7 @@ app.get('/bookings/:email', async (req, res) => {
 
 
 
-const verifyToken = (req, res, next) => {
-    const email = req.user?.email || req.headers['x-user-email'] || req.body?.userEmail || req.query?.email;
-    if (email) {
-        req.user = { email };
-        return next();
-    }
-    const authHeader = req.headers.authorization;
-    if (authHeader) {
-        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
-        req.user = { email: token };
-        return next();
-    }
-    return res.status(401).send({ success: false, message: 'Unauthorized access. User email or token required.' });
-};
+
 
 // Cancel Booking (Protected)
 app.patch('/bookings/:id/cancel', async (req, res) => {
@@ -220,6 +207,31 @@ app.patch('/bookings/:id/cancel', async (req, res) => {
             { $set: { status: 'Cancelled' } }
         );
         res.send({ success: true, message: 'Booking cancelled successfully!', data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+// Delete Booking (Protected Route)
+app.delete('/bookings/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        
+        // Find the booking by ID
+        const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!booking) {
+            return res.status(404).send({ success: false, message: 'Booking not found.' });
+        }
+
+        // Ensure the logged-in user owns this booking
+        if (booking.userEmail !== req.user.email) {
+            return res.status(403).send({ success: false, message: 'Unauthorized action: You can only delete your own bookings.' });
+        }
+
+        // Delete the booking from MongoDB
+        const result = await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
+        
+        res.send({ success: true, message: 'Booking deleted successfully!', data: result });
     } catch (err) {
         res.status(500).send({ success: false, message: err.message });
     }
