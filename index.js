@@ -211,10 +211,6 @@ app.post('/studios', verifyToken, (req, res, next) => {
       imageUrl = uploadResult.url;
     }
 
-    if (!imageUrl) {
-      return res.status(400).send({ success: false, message: 'Studio image is required (upload file or provide URL).' });
-    }
-
     let amenities = req.body.amenities;
     if (typeof amenities === 'string') {
       try {
@@ -224,9 +220,36 @@ app.post('/studios', verifyToken, (req, res, next) => {
       }
     }
 
+    // Process up to 5 photos
+    let images = req.body.images;
+    if (typeof images === 'string') {
+      try {
+        images = JSON.parse(images);
+      } catch {
+        images = [images];
+      }
+    }
+    if (!Array.isArray(images) || images.length === 0) {
+      images = imageUrl ? [imageUrl] : [];
+    } else {
+      images = images.filter(u => typeof u === 'string' && u.trim().length > 0);
+      if (imageUrl && !images.includes(imageUrl)) {
+        images.unshift(imageUrl);
+      }
+    }
+    images = images.slice(0, 5);
+    if (!imageUrl && images.length > 0) {
+      imageUrl = images[0];
+    }
+
+    if (!imageUrl && images.length === 0) {
+      return res.status(400).send({ success: false, message: 'Studio image is required (upload file or provide URL).' });
+    }
+
     const studioData = {
       ...req.body,
       image: imageUrl,
+      images,
       ...(amenities ? { amenities } : {}),
       hourlyRate: req.body.hourlyRate ? Number(req.body.hourlyRate) : 0,
       securityDeposit: req.body.securityDeposit ? Number(req.body.securityDeposit) : 0,
@@ -272,6 +295,23 @@ app.patch('/studios/:id', verifyToken, (req, res, next) => {
         updateData.amenities = JSON.parse(updateData.amenities);
       } catch {
         updateData.amenities = [updateData.amenities];
+      }
+    }
+
+    if (updateData.images !== undefined) {
+      let imgs = updateData.images;
+      if (typeof imgs === 'string') {
+        try {
+          imgs = JSON.parse(imgs);
+        } catch {
+          imgs = [imgs];
+        }
+      }
+      if (Array.isArray(imgs)) {
+        updateData.images = imgs.filter(u => typeof u === 'string' && u.trim().length > 0).slice(0, 5);
+        if (updateData.images.length > 0 && !updateData.image) {
+          updateData.image = updateData.images[0];
+        }
       }
     }
 
