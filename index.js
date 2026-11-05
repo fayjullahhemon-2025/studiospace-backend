@@ -24,7 +24,7 @@ const connectedClient = await connectToMongoDB()
 const db = connectedClient.db('studioSpaceDB')
 const authReviews = db.collection('authPagesReviews')
 const bannerImages = db.collection('bannerImages')
-
+const studiosCollection = db.collection('studios')
 app.get('/',(req,res)=>{
     res.send('SERVER is running Successfully')
 })
@@ -41,7 +41,25 @@ app.get('/banner-images',async(req,res)=>{
     const result = await cursor.toArray()
     res.send(result)
 })
+// Get All Studios (Supports category filtering & limit for homepage)
+app.get('/studios', async (req, res) => {
+    try {
+        const { category, limit } = req.query;
+        let query = {};
+        if (category) {
+            query.category = category;
+        }
 
+        let cursor = studiosCollection.find(query).sort({ _id: -1 });
+        if (limit) {
+            cursor = cursor.limit(parseInt(limit));
+        }
+        const result = await cursor.toArray();
+        res.send({ success: true, data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
 app.listen(port,()=>{
     console.log(`Server is running on port ${port}`)
 })
