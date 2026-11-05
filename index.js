@@ -43,13 +43,16 @@ app.get('/banner-images',async(req,res)=>{
     const result = await cursor.toArray()
     res.send(result)
 })
-// Get All Studios (Supports category filtering & limit for homepage)
+// Get All Studios (Supports category, ownerEmail filtering & limit for homepage)
 app.get('/studios', async (req, res) => {
     try {
-        const { category, limit } = req.query;
+        const { category, limit, ownerEmail } = req.query;
         let query = {};
         if (category) {
             query.category = category;
+        }
+        if (ownerEmail) {
+            query.ownerEmail = ownerEmail;
         }
 
         let cursor = studiosCollection.find(query).sort({ _id: -1 });
@@ -75,9 +78,51 @@ app.get('/studios/:id', async (req, res) => {
         res.status(500).send({ success: false, message: err.message });
     }
 });
-// ==========================================
-// 3. BOOKINGS & DOUBLE-BOOKING PREVENTION (Challenge 2)
-// ==========================================
+
+// Add New Studio
+app.post('/studios', async (req, res) => {
+    try {
+        const studioData = {
+            ...req.body,
+            createdAt: new Date(),
+        };
+        const result = await studiosCollection.insertOne(studioData);
+        res.status(201).send({ success: true, message: 'Studio listed successfully!', data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
+// Update Studio Details
+app.patch('/studios/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const updateData = { ...req.body };
+        delete updateData._id;
+        const result = await studiosCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: updateData }
+        );
+        res.send({ success: true, message: 'Studio updated successfully.', data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
+// Delete Studio
+app.delete('/studios/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const result = await studiosCollection.deleteOne({ _id: new ObjectId(id) });
+        if (result.deletedCount === 0) {
+            return res.status(404).send({ success: false, message: 'Studio not found.' });
+        }
+        res.send({ success: true, message: 'Studio deleted successfully.', data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
 
 // Create Booking
 app.post('/bookings', async (req, res) => {
@@ -123,6 +168,20 @@ app.post('/bookings', async (req, res) => {
         res.status(500).send({ success: false, message: err.message });
     }
 });
+// Get User's Bookings (Protected)
+app.get('/bookings/:email', async (req, res) => {
+    try {
+        const { email } = req.params; 
+        if (!email) {
+            return res.status(400).send({ success: false, message: "Email is required" });
+        }
+        const result = await bookingsCollection.find({ userEmail: email }).toArray();
+        res.send({ success: true, data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
 app.listen(port,()=>{
     console.log(`Server is running on port ${port}`)
 })
