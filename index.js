@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import multer from 'multer'
 import { MongoClient, ObjectId } from 'mongodb'
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import dotenv from 'dotenv'
@@ -9,6 +10,54 @@ const port = process.env.PORT || 5000
 
 app.use(cors())
 app.use(express.json())
+
+// Multer in-memory storage for handling image uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 32 * 1024 * 1024, // 32MB max (ImgBB limit)
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files (JPEG, PNG, WEBP, AVIF, GIF) are allowed.'), false);
+    }
+  },
+});
+
+// Helper: Forward image buffer to ImgBB using FormData
+async function forwardImageToImgBB(fileBuffer, originalname, mimetype) {
+  const apiKey = process.env.IMGBB_API_KEY;
+  if (!apiKey) {
+    throw new Error('IMGBB_API_KEY is not configured in server .env. Please add your ImgBB API key.');
+  }
+
+  const blob = new Blob([fileBuffer], { type: mimetype || 'image/jpeg' });
+  const formData = new FormData();
+  formData.append('image', blob, originalname || 'image.jpg');
+
+  const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    const errorMsg = data?.error?.message || `ImgBB upload failed with status ${response.status}`;
+    throw new Error(errorMsg);
+  }
+
+  return {
+    url: data.data.url,
+    displayUrl: data.data.display_url,
+    thumbUrl: data.data.thumb?.url,
+    deleteUrl: data.data.delete_url,
+    width: data.data.width,
+    height: data.data.height,
+    size: data.data.size,
+  };
+}
 
 //verifyToken middleware
 const getJwksUrl = () => {
@@ -116,33 +165,124 @@ app.get('/studios/:id', async (req, res) => {
 });
 
 
-//  Protected Studio Routes
-app.post('/studios', verifyToken, async (req, res) => {
-    try {
-        const studioData = {
-            ...req.body,
-            createdAt: new Date(),
-        };
-        const result = await studiosCollection.insertOne(studioData);
-        res.status(201).send({ success: true, message: 'Studio listed successfully!', data: result });
-    } catch (err) {
-        res.status(500).send({ success: false, message: err.message });
+//  Image Upload Route (Uploads image directly to ImgBB via FormData)
+app.post('/upload', verifyToken, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).send({ success: false, message: `Upload error: ${err.message}` });
+    } else if (err) {
+      return res.status(400).send({ success: false, message: err.message });
     }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send({ success: false, message: 'No image file provided in "image" field.' });
+    }
+
+    const imgbbData = await forwardImageToImgBB(req.file.buffer, req.file.originalname, req.file.mimetype);
+    res.status(200).send({
+      success: true,
+      message: 'Image uploaded successfully to ImgBB!',
+      data: imgbbData,
+    });
+  } catch (err) {
+    console.error('Image upload failed:', err.message);
+    res.status(500).send({ success: false, message: err.message });
+  }
 });
 
-app.patch('/studios/:id', verifyToken, async (req, res) => {
-    try {
-        const id = req.params.id;
-        const updateData = { ...req.body };
-        delete updateData._id;
-        const result = await studiosCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: updateData }
-        );
-        res.send({ success: true, message: 'Studio updated successfully.', data: result });
-    } catch (err) {
-        res.status(500).send({ success: false, message: err.message });
+//  Protected Studio Routes
+app.post('/studios', verifyToken, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      return res.status(400).send({ success: false, message: err.message });
     }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    let imageUrl = req.body.image;
+
+    // If a physical image file was uploaded with the multipart form, forward it to ImgBB
+    if (req.file) {
+      const uploadResult = await forwardImageToImgBB(req.file.buffer, req.file.originalname, req.file.mimetype);
+      imageUrl = uploadResult.url;
+    }
+
+    if (!imageUrl) {
+      return res.status(400).send({ success: false, message: 'Studio image is required (upload file or provide URL).' });
+    }
+
+    let amenities = req.body.amenities;
+    if (typeof amenities === 'string') {
+      try {
+        amenities = JSON.parse(amenities);
+      } catch {
+        amenities = [amenities];
+      }
+    }
+
+    const studioData = {
+      ...req.body,
+      image: imageUrl,
+      ...(amenities ? { amenities } : {}),
+      hourlyRate: req.body.hourlyRate ? Number(req.body.hourlyRate) : 0,
+      securityDeposit: req.body.securityDeposit ? Number(req.body.securityDeposit) : 0,
+      capacity: req.body.capacity ? Number(req.body.capacity) : 1,
+      createdAt: new Date(),
+    };
+
+    const result = await studiosCollection.insertOne(studioData);
+    res.status(201).send({
+      success: true,
+      message: 'Studio listed successfully!',
+      data: result,
+      imageUrl,
+    });
+  } catch (err) {
+    res.status(500).send({ success: false, message: err.message });
+  }
+});
+
+app.patch('/studios/:id', verifyToken, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      return res.status(400).send({ success: false, message: err.message });
+    }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const updateData = { ...req.body };
+    delete updateData._id;
+
+    if (req.file) {
+      const uploadResult = await forwardImageToImgBB(req.file.buffer, req.file.originalname, req.file.mimetype);
+      updateData.image = uploadResult.url;
+    }
+
+    if (updateData.hourlyRate !== undefined) updateData.hourlyRate = Number(updateData.hourlyRate);
+    if (updateData.securityDeposit !== undefined) updateData.securityDeposit = Number(updateData.securityDeposit);
+    if (updateData.capacity !== undefined) updateData.capacity = Number(updateData.capacity);
+    if (typeof updateData.amenities === 'string') {
+      try {
+        updateData.amenities = JSON.parse(updateData.amenities);
+      } catch {
+        updateData.amenities = [updateData.amenities];
+      }
+    }
+
+    const result = await studiosCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+    res.send({ success: true, message: 'Studio updated successfully.', data: result, imageUrl: updateData.image });
+  } catch (err) {
+    res.status(500).send({ success: false, message: err.message });
+  }
 });
 
 app.delete('/studios/:id', verifyToken, async (req, res) => {
