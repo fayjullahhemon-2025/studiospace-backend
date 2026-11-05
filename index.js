@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { MongoClient, ObjectId } from 'mongodb'
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 import dotenv from 'dotenv'
 dotenv.config()
 const app = express()
@@ -8,6 +9,26 @@ const port = process.env.PORT || 5000
 
 app.use(cors())
 app.use(express.json())
+
+//verifyToken middleware
+const verifyToken = async(req, res, next) => {
+  const authHeader = req.headers.authorization;
+  console.log(authHeader)
+  if(!authHeader){
+    return res.status(401).send({ msg: 'Unauthorized!' })
+  }
+  const token = authHeader.split(" ")[1]
+  const JWKS = createRemoteJWKSet(
+    new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
+  )
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+    req.user = payload; 
+    next()
+  } catch (error) {
+    return res.status(500).send({ msg: "Server Error" })
+  }
+}
 
 const client = new MongoClient(process.env.MONGO_CLIENT_URL);
 export async function connectToMongoDB() {
@@ -27,45 +48,39 @@ const bannerImages = db.collection('bannerImages')
 const studiosCollection = db.collection('studios')
 const bookingsCollection = db.collection('bookings')
 
-app.get('/',(req,res)=>{
+app.get('/', (req, res) => {
     res.send('SERVER is running Successfully')
 })
 
-//auth reviews
-app.get('/auth-reviews',async(req,res)=>{
+// Public routes 
+app.get('/auth-reviews', async (req, res) => {
     const cursor = authReviews.find()
     const result = await cursor.toArray()
     res.send(result)
 })
-//banner images
-app.get('/banner-images',async(req,res)=>{
+
+app.get('/banner-images', async (req, res) => {
     const cursor = bannerImages.find()
     const result = await cursor.toArray()
     res.send(result)
 })
-// Get All Studios (Supports category, ownerEmail filtering & limit for homepage)
+
 app.get('/studios', async (req, res) => {
     try {
         const { category, limit, ownerEmail } = req.query;
         let query = {};
-        if (category) {
-            query.category = category;
-        }
-        if (ownerEmail) {
-            query.ownerEmail = ownerEmail;
-        }
+        if (category) { query.category = category; }
+        if (ownerEmail) { query.ownerEmail = ownerEmail; }
 
         let cursor = studiosCollection.find(query).sort({ _id: -1 });
-        if (limit) {
-            cursor = cursor.limit(parseInt(limit));
-        }
+        if (limit) { cursor = cursor.limit(parseInt(limit)); }
         const result = await cursor.toArray();
         res.send({ success: true, data: result });
     } catch (err) {
         res.status(500).send({ success: false, message: err.message });
     }
 });
-// Get Single Studio Details
+
 app.get('/studios/:id', async (req, res) => {
     try {
         const id = req.params.id;
@@ -79,8 +94,9 @@ app.get('/studios/:id', async (req, res) => {
     }
 });
 
-// Add New Studio
-app.post('/studios', async (req, res) => {
+
+//  Protected Studio Routes
+app.post('/studios', verifyToken, async (req, res) => {
     try {
         const studioData = {
             ...req.body,
@@ -93,8 +109,7 @@ app.post('/studios', async (req, res) => {
     }
 });
 
-// Update Studio Details
-app.patch('/studios/:id', async (req, res) => {
+app.patch('/studios/:id', verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
         const updateData = { ...req.body };
@@ -109,8 +124,7 @@ app.patch('/studios/:id', async (req, res) => {
     }
 });
 
-// Delete Studio
-app.delete('/studios/:id', async (req, res) => {
+app.delete('/studios/:id', verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
         const result = await studiosCollection.deleteOne({ _id: new ObjectId(id) });
@@ -124,12 +138,11 @@ app.delete('/studios/:id', async (req, res) => {
 });
 
 
-// Create Booking
-app.post('/bookings', async (req, res) => {
+//  Protected Booking Routes
+app.post('/bookings', verifyToken, async (req, res) => {
     try {
         const { studioId, studioTitle, bookingDate, startTime, endTime, totalAmount } = req.body;
 
-        // Challenge 2: Check for overlapping Confirmed/Pending bookings
         const existingOverlap = await bookingsCollection.findOne({
             studioId,
             bookingDate,
@@ -146,8 +159,9 @@ app.post('/bookings', async (req, res) => {
             });
         }
 
-        const userEmail = req.user?.email || req.body.userEmail || req.headers['x-user-email'];
-        const userName = req.user?.name || req.body.userName || req.headers['x-user-name'] || 'Studio Creator';
+       
+        const userEmail = req.user?.email || req.body.userEmail;
+        const userName = req.user?.name || req.body.userName || 'Studio User';
 
         const bookingData = {
             studioId,
@@ -168,13 +182,17 @@ app.post('/bookings', async (req, res) => {
         res.status(500).send({ success: false, message: err.message });
     }
 });
-// Get User's Bookings (Protected)
-app.get('/bookings/:email', async (req, res) => {
+
+app.get('/bookings/:email', verifyToken, async (req, res) => {
     try {
         const { email } = req.params; 
         if (!email) {
             return res.status(400).send({ success: false, message: "Email is required" });
         }
+        if (req.user?.email && req.user.email !== email) {
+            return res.status(403).send({ success: false, message: "Forbidden access." });
+        }
+
         const result = await bookingsCollection.find({ userEmail: email }).toArray();
         res.send({ success: true, data: result });
     } catch (err) {
@@ -182,12 +200,7 @@ app.get('/bookings/:email', async (req, res) => {
     }
 });
 
-
-
-
-
-// Cancel Booking (Protected)
-app.patch('/bookings/:id/cancel', async (req, res) => {
+app.patch('/bookings/:id/cancel', verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
         const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
@@ -211,31 +224,27 @@ app.patch('/bookings/:id/cancel', async (req, res) => {
         res.status(500).send({ success: false, message: err.message });
     }
 });
-// Delete Booking (Protected Route)
-app.delete('/bookings/:id', async (req, res) => {
+
+app.delete('/bookings/:id', verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
-        
-        // Find the booking by ID
         const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
 
         if (!booking) {
             return res.status(404).send({ success: false, message: 'Booking not found.' });
         }
 
-        // Ensure the logged-in user owns this booking
         if (booking.userEmail !== req.user.email) {
             return res.status(403).send({ success: false, message: 'Unauthorized action: You can only delete your own bookings.' });
         }
 
-        // Delete the booking from MongoDB
         const result = await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
-        
         res.send({ success: true, message: 'Booking deleted successfully!', data: result });
     } catch (err) {
         res.status(500).send({ success: false, message: err.message });
     }
 });
-app.listen(port,()=>{
+
+app.listen(port, () => {
     console.log(`Server is running on port ${port}`)
 })
