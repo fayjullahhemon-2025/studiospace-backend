@@ -11,24 +11,45 @@ app.use(cors())
 app.use(express.json())
 
 //verifyToken middleware
+const getJwksUrl = () => {
+  const base = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  return new URL(`${base}/api/auth/jwks`);
+};
+
+let remoteJwks;
+const getJWKS = () => {
+  if (!remoteJwks) {
+    remoteJwks = createRemoteJWKSet(getJwksUrl());
+  }
+  return remoteJwks;
+};
+
 const verifyToken = async(req, res, next) => {
   const authHeader = req.headers.authorization;
-  console.log(authHeader)
-  if(!authHeader){
-    return res.status(401).send({ msg: 'Unauthorized!' })
+  if (!authHeader) {
+    return res.status(401).send({ success: false, msg: 'Unauthorized.' });
   }
-  const token = authHeader.split(" ")[1]
-  const JWKS = createRemoteJWKSet(
-    new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
-  )
+
+  const parts = authHeader.split(" ");
+  if (parts.length !== 2 || parts[0] !== "Bearer") {
+    return res.status(401).send({ success: false, msg: 'Unauthorized: Invalid Authorization header format.' });
+  }
+
+  const token = parts[1];
+  if (!token || token === 'undefined' || token === 'null') {
+    return res.status(401).send({ success: false, msg: 'Unauthorized: Invalid or missing token.' });
+  }
+
   try {
+    const JWKS = getJWKS();
     const { payload } = await jwtVerify(token, JWKS);
-    req.user = payload; 
-    next()
+    req.user = payload;
+    next();
   } catch (error) {
-    return res.status(500).send({ msg: "Server Error" })
+    console.error("JWT verification error:", error.message);
+    return res.status(401).send({ success: false, msg: "Invalid or expired token." });
   }
-}
+};
 
 const client = new MongoClient(process.env.MONGO_CLIENT_URL);
 export async function connectToMongoDB() {
