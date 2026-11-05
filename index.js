@@ -137,12 +137,24 @@ app.get('/banner-images', async (req, res) => {
 
 app.get('/studios', async (req, res) => {
     try {
-        const { category, limit, ownerEmail } = req.query;
+        const { category, limit, ownerEmail, sortBy, featured } = req.query;
         let query = {};
         if (category) { query.category = category; }
         if (ownerEmail) { query.ownerEmail = ownerEmail; }
 
-        let cursor = studiosCollection.find(query).sort({ _id: -1 });
+        let sortOption = { _id: -1 };
+        if (
+            sortBy === 'rating' ||
+            sortBy === 'top-rated' ||
+            featured === 'true' ||
+            (!sortBy && limit === '6')
+        ) {
+            sortOption = { rating: -1, reviewCount: -1, _id: -1 };
+        } else if (sortBy === 'newest') {
+            sortOption = { _id: -1 };
+        }
+
+        let cursor = studiosCollection.find(query).sort(sortOption);
         if (limit) { cursor = cursor.limit(parseInt(limit)); }
         const result = await cursor.toArray();
         res.send({ success: true, data: result });
@@ -340,6 +352,42 @@ app.delete('/studios/:id', verifyToken, async (req, res) => {
 
 
 //  Protected Booking Routes
+
+// Helper: Booking end datetime (handles end hours >= 24, e.g. "30:00")
+function getBookingEndDateTime(booking) {
+    if (!booking || !booking.bookingDate || !booking.endTime) return null;
+    const [endHour, endMinute] = String(booking.endTime).split(':').map((v) => parseInt(v, 10));
+    const end = new Date(`${booking.bookingDate}T00:00:00`);
+    if (Number.isNaN(end.getTime())) return null;
+    end.setHours(Number.isNaN(endHour) ? 0 : endHour, Number.isNaN(endMinute) ? 0 : endMinute, 0, 0);
+    return end;
+}
+
+// Lazy transition: Pending/Confirmed bookings whose end time has passed become Completed
+async function completeExpiredBookings() {
+    try {
+        const candidates = await bookingsCollection
+            .find({ status: { $in: ['Pending', 'Confirmed'] } })
+            .toArray();
+        const expiredIds = candidates
+            .filter((booking) => {
+                const end = getBookingEndDateTime(booking);
+                return end && end < new Date();
+            })
+            .map((booking) => booking._id);
+        if (expiredIds.length === 0) return;
+        const result = await bookingsCollection.updateMany(
+            { _id: { $in: expiredIds } },
+            { $set: { status: 'Completed' } }
+        );
+        if (result.modifiedCount > 0) {
+            console.log(`Auto-completed ${result.modifiedCount} finished booking(s).`);
+        }
+    } catch (err) {
+        console.error('Failed to auto-complete expired bookings:', err.message);
+    }
+}
+
 app.post('/bookings', verifyToken, async (req, res) => {
     try {
         const { studioId, studioTitle, bookingDate, startTime, endTime, totalAmount } = req.body;
@@ -394,8 +442,75 @@ app.get('/bookings/:email', verifyToken, async (req, res) => {
             return res.status(403).send({ success: false, message: "Forbidden access." });
         }
 
+        await completeExpiredBookings();
         const result = await bookingsCollection.find({ userEmail: email }).toArray();
         res.send({ success: true, data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
+// Bookings made for the host's own studios (host approval inbox)
+app.get('/bookings/host/:email', verifyToken, async (req, res) => {
+    try {
+        const { email } = req.params;
+        if (!email) {
+            return res.status(400).send({ success: false, message: "Email is required" });
+        }
+        if (req.user?.email && req.user.email !== email) {
+            return res.status(403).send({ success: false, message: "Forbidden access." });
+        }
+
+        await completeExpiredBookings();
+
+        const ownedStudios = await studiosCollection
+            .find({ ownerEmail: email })
+            .project({ _id: 1 })
+            .toArray();
+        const ownedIds = ownedStudios.map((studio) => studio._id.toString());
+
+        const result = await bookingsCollection
+            .find({ studioId: { $in: ownedIds } })
+            .sort({ createdAt: -1 })
+            .toArray();
+        res.send({ success: true, data: result });
+    } catch (err) {
+        res.status(500).send({ success: false, message: err.message });
+    }
+});
+
+// Host confirms a pending booking on one of their studios
+app.patch('/bookings/:id/confirm', verifyToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ success: false, message: 'Invalid booking id.' });
+        }
+
+        const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+        if (!booking) {
+            return res.status(404).send({ success: false, message: 'Booking not found.' });
+        }
+        if (!booking.studioId || !ObjectId.isValid(booking.studioId)) {
+            return res.status(400).send({ success: false, message: 'Booking has no valid associated studio.' });
+        }
+
+        const studio = await studiosCollection.findOne({ _id: new ObjectId(booking.studioId) });
+        if (!studio) {
+            return res.status(404).send({ success: false, message: 'Associated studio not found.' });
+        }
+        if (studio.ownerEmail !== req.user.email) {
+            return res.status(403).send({ success: false, message: 'Unauthorized action: Only the studio host can confirm this booking.' });
+        }
+        if (booking.status !== 'Pending') {
+            return res.status(400).send({ success: false, message: 'Only pending bookings can be confirmed.' });
+        }
+
+        const result = await bookingsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: 'Confirmed' } }
+        );
+        res.send({ success: true, message: 'Booking confirmed successfully!', data: result });
     } catch (err) {
         res.status(500).send({ success: false, message: err.message });
     }
@@ -449,3 +564,4 @@ app.delete('/bookings/:id', verifyToken, async (req, res) => {
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`)
 })
+export default app
