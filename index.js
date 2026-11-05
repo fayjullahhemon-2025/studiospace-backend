@@ -61,7 +61,7 @@ async function forwardImageToImgBB(fileBuffer, originalname, mimetype) {
 
 //verifyToken middleware
 const getJwksUrl = () => {
-  const base = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const base = (process.env.CLIENT_URL).replace(/\/+$/, '');
   return new URL(`${base}/api/auth/jwks`);
 };
 
